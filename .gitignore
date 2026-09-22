@@ -1,0 +1,106 @@
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+
+# ===== 构建产物 =====
+build/
+*.spec
+
+# ===== 逆向分析中间产物（不对外公开）=====
+# APK 解包
+iKF.apk
+classes.dex
+resources.arsc
+AndroidManifest.xml
+META-INF/
+!META-INF/**/README*
+agconnect-core.properties
+HMSCore-*.properties
+network-*.properties
+kotlin-tooling-metadata.json
+DebugProbesKt.bin
+kotlin/
+okhttp3/
+org/
+kotlin-tooling-metadata.json
+
+# 分析脚本
+analyze_anc.py
+analyze_anc2.py
+anc_levels.py
+anc_levels2.py
+arsc_strings.py
+check_flow.py
+dex_header.py
+diff_state.py
+dump_slots_all.py
+enum_gatt.py
+find_anc_classes.py
+find_business.py
+find_ff14_refs.py
+find_ff14_xref.py
+find_packages.py
+force_connect.py
+open_dex.py
+parse_150742.py
+parse_btsnoop.py
+parse_btsnoop2.py
+parse_btsnoop3.py
+parse_btsnoop4.py
+parse_hci02.py
+parse_host0.py
+parse_le_writes.py
+parse_window.py
+preview_compare.py
+read_anc_state.py
+read_gatt.py
+scan_all.py
+scan_ble.py
+scan_classes.py
+scan_ikf.py
+scan_memory.py
+scan_sp_keys.py
+verify_battery.py
+ikf_cli.py
+ikf_panel.py
+
+# 输出文本
+*.txt
+anc_out.txt
+anc2_out.txt
+app_err.txt
+
+# 日志/抓包
+bugreport.zip
+bugreport2.zip
+lark__proto_bugreport_*.zip
+listen_events.json
+listen_full.py
+listen_gatt.py
+
+# 图片（图标会单独保留，AI 原始图排除）
+icon_black.jpg
+icon_new.jpg
+_chk.png
+
+# 本地配置（含用户偏好，不入库）
+ikf_app_config.json
+
+# exe 打包结果单独处理（dist 整目录排除，另用 release 附上）
+dist/
+
+# 逆向解包目录
+assets/
+lib/
+res/
+bugreport2x/
+bugreport_extract/
+frida/
+jadx_out/
+proto/
+
+# 其余图标制作脚本与预览图
+make_icon.py
+make_icon_new.py
+ikf_preview_compare.png
