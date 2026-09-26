@@ -2,6 +2,8 @@
 
 面向 iKF-Nano 系列蓝牙降噪耳机的 Windows 图形化控制工具。仅用于个人设备的控制适配与学习研究。
 
+> **Keywords / 关键词：** `bluetooth ANC headphones` `noise cancelling earbuds` `Active Noise Cancellation` `LDAC` `BLE GATT` `Windows desktop app` `iKF earbuds controller` — 蓝牙降噪耳机、主动降噪、通透模式、降噪档位、LDAC 高音质、电量显示
+
 ![图标](ikf_icon.ico)
 
 ## 功能
