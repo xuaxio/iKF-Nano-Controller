@@ -30,7 +30,9 @@ def resource_path(name):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
 
-# 配置文件：打包后放 exe 同目录（_MEIPASS 是临时目录，重启即丢失），脚本运行放源码目录
+# 配置文件：打包后放 exe 同目录，源码运行放源码目录（与 exe 分开）——
+# 但两者各自独立保存，避免手动用 exe、自启却走源码导致配置分家。
+# 解决方式：自启统一指向 exe，保证都用同一份 exe 配置。
 if getattr(sys, "frozen", False):
     CONFIG_DIR = os.path.dirname(os.path.abspath(sys.executable))
 else:
