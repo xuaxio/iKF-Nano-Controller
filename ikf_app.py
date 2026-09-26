@@ -216,6 +216,7 @@ class IKFPanel:
 
         self.cfg = load_config()
         self._mem_applied = False   # 标记是否已应用记忆，防止 LDAC 重连后重复触发
+        self._restoring = False     # 恢复记忆中：此间读回的中间态不回写配置，避免污染记忆
         self.q = queue.Queue()
         self.ops = IKFOps(DEFAULT_MAC, self.q)
         self.ops.start()
@@ -389,12 +390,16 @@ class IKFPanel:
         若记忆 LDAC 为开：先开 LDAC（会断连并重置降噪），
         交给 watchdog 检测断连并自动重连，重连成功后补设降噪，最终状态 = 记忆值。"""
         # 如果是 LDAC 重连后的二次连接，只补降噪即可，回到常规
+        self._restoring = True      # 进入恢复流程：读回的中间态不污染记忆
         if self._mem_applied:
             self._mem_applied = False
             self._send_mem_anc()
+            # 补降噪后稍稳定再结束"恢复中"，让 watchddog 读回最终值前不被中间态覆盖
+            self.root.after(1500, lambda: setattr(self, "_restoring", False))
             return
         if not self.want_apply:
             self._log("连接成功（已关闭自动记忆，保持当前设置）")
+            self._restoring = False
             return
         ld = self.cfg.get("ldac", False)
         if ld:
@@ -407,6 +412,7 @@ class IKFPanel:
             self._mem_applied = False
             self._log(">> 恢复记忆: 应用降噪档位")
             self._send_mem_anc()
+            self.root.after(1500, lambda: setattr(self, "_restoring", False))
 
     def _finish_mem_ldac(self):
         """LDAC 已开的兜底：若重连流程未触发补降噪，且当前已连上，则直接补设一次。"""
@@ -558,6 +564,10 @@ class IKFPanel:
         self._sync_cfg_to_real(m, l, ld)
 
     def _sync_cfg_to_real(self, m, l, ld):
+        # 恢复记忆中：读到的 LDAC 重置/降噪补设等中间态不写回配置，
+        # 避免把用户要的降噪记忆（如重度）被临时"off"覆盖，造成开机档位来回跳
+        if self._restoring:
+            return
         ivl = {0: "adaptive", 1: "light", 2: "balanced", 3: "deep"}
         if m == 1:
             mode, level = "anc", ivl.get(l, self.cfg.get("level", "deep"))
