@@ -8,9 +8,9 @@
 
 ## 下载（直接使用，无需 Python）
 
-**➡️ [点此一键下载 iKF-Nano控制.exe](https://github.com/xuaxio/iKF-Nano-Controller/releases/latest/download/iKF-Nano%E6%8E%A7%E5%88%B6.exe)**  （约 31 MB，Windows 10/11）
+**➡️ [点此一键下载 iKF-Nano.exe](https://github.com/xuaxio/iKF-Nano-Controller/releases/latest/download/iKF-Nano.exe)**  （约 31 MB，Windows 10/11）
 
-点开即下载，无需 Python、无需安装任何依赖，下载后双击就能用。
+点开即下载，无需 Python、无需安装任何依赖，下载后双击就能用（这就是本控制软件的可执行文件，GitHub 会自动把中文名规范成 `iKF-Nano.exe`）。
 
 - 首次运行若弹出「Windows 已保护你的电脑」，点 **更多信息 → 仍要运行**（exe 未购买代码签名证书，属正常提示）
 - 想选其他版本：到 [Releases 页面](https://github.com/xuaxio/iKF-Nano-Controller/releases) 手动下载
