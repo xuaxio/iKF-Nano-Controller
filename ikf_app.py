@@ -215,7 +215,7 @@ class IKFPanel:
             pass
 
         self.cfg = load_config()
-        self._mem_applied = False   # 标记是否已应用记忆，防止 LDAC 重连后重复触发
+        self._restore_stage = None  # 记忆恢复状态机: None / "await_status" / "await_reconnect"
         self._restoring = False     # 恢复记忆中：此间读回的中间态不回写配置，避免污染记忆
         self.q = queue.Queue()
         self.ops = IKFOps(DEFAULT_MAC, self.q)
@@ -385,42 +385,68 @@ class IKFPanel:
             name += "-" + LEVEL_NAME.get(level, "")
         self.q.put(("log", f"恢复降噪: {name}"))
 
-    def _apply_memory(self):
-        """连接成功且勾选记忆时恢复上次设置。
-        若记忆 LDAC 为开：先开 LDAC（会断连并重置降噪），
-        交给 watchdog 检测断连并自动重连，重连成功后补设降噪，最终状态 = 记忆值。"""
-        # 如果是 LDAC 重连后的二次连接，只补降噪即可，回到常规
-        self._restoring = True      # 进入恢复流程：读回的中间态不污染记忆
-        if self._mem_applied:
-            self._mem_applied = False
-            self._send_mem_anc()
-            # 补降噪后稍稳定再结束"恢复中"，让 watchddog 读回最终值前不被中间态覆盖
-            self.root.after(1500, lambda: setattr(self, "_restoring", False))
-            return
+    def _on_connected(self):
+        """连接成功：启动记忆恢复流程（先读回真实状态，再按差异下发）。"""
         if not self.want_apply:
             self._log("连接成功（已关闭自动记忆，保持当前设置）")
-            self._restoring = False
             return
-        ld = self.cfg.get("ldac", False)
-        if ld:
-            self._mem_applied = True
-            self._log(">> 恢复记忆: 先开启 LDAC（会断连，watchdog 会自动重连后补设降噪）...")
-            self.ops.set_ldac(True)
-            # 兜底：若 6 秒后仍没被二次连接消费（如 LDAC 未断连），直接补一次降噪
-            self.root.after(6000, self._finish_mem_ldac)
-        else:
-            self._mem_applied = False
+        if self._restore_stage == "await_reconnect":
+            # LDAC 已切换并触发了重连：现在补设降噪即可
+            self._restoring = True
+            self._restore_stage = None
+            self._log(">> 重连完成，补设降噪档位")
+            self._send_mem_anc()
+            self.root.after(1500, self._end_restore)
+            return
+        # 首次连接：先读回耳机真实状态，避免无谓的重复下发
+        self._restoring = True
+        self._restore_stage = "await_status"
+
+    def _on_status(self, m, l, ld, bt):
+        """收到真实状态：若正处于恢复流程，则按差异下发必要指令。"""
+        self._render_status(m, l, ld, bt)
+        if self._restore_stage == "await_status":
+            self._restore_stage = None
+            self._restore_from_real(m, l, ld)
+
+    def _anc_differs(self, m, l):
+        """耳机当前降噪状态是否与记忆不符。"""
+        mode = self.cfg.get("mode", "anc")
+        if mode == "off":
+            return m != 0x02
+        if mode == "transparency":
+            return m != 0x03
+        return not (m == 0x01 and l == ANC_LEVELS.get(self.cfg.get("level", "deep"), 0x03))
+
+    def _restore_from_real(self, m, l, ld):
+        """对比耳机真实状态与记忆，只下发有差异的指令，避免多次状态跳变。"""
+        tgt_ldac = bool(self.cfg.get("ldac", False))
+        # 1) LDAC 有差异 → 先切 LDAC（硬件会断连并重置降噪），重连后补降噪
+        if ld is not None and bool(ld) != tgt_ldac:
+            self._log(f">> 恢复记忆: LDAC {'开' if tgt_ldac else '关'}（会断连，重连后自动补设降噪）")
+            self._restore_stage = "await_reconnect"
+            self.ops.set_ldac(tgt_ldac)
+            # 兜底：若 LDAC 切换未导致断连（6 秒内无重连），直接补设降噪
+            self.root.after(6000, self._fallback_restore_anc)
+            return
+        # 2) LDAC 已一致 → 只对齐降噪
+        if self._anc_differs(m, l):
             self._log(">> 恢复记忆: 应用降噪档位")
             self._send_mem_anc()
-            self.root.after(1500, lambda: setattr(self, "_restoring", False))
+        else:
+            self._log("连接成功，设置与记忆一致")
+        self.root.after(1500, self._end_restore)
 
-    def _finish_mem_ldac(self):
-        """LDAC 已开的兜底：若重连流程未触发补降噪，且当前已连上，则直接补设一次。"""
-        if self._mem_applied:
+    def _fallback_restore_anc(self):
+        """LDAC 切换未触发重连时的兜底：直接补设降噪。"""
+        if self._restore_stage == "await_reconnect":
+            self._restore_stage = None
             if self.ops.alive():
-                self._mem_applied = False
                 self._send_mem_anc()
-            # 若仍未连上，watchdog 会继续重连，届时 _apply_memory 消费 _mem_applied
+            self.root.after(1500, self._end_restore)
+
+    def _end_restore(self):
+        self._restoring = False
 
     # ---------- 自启动 ----------
     def _is_autostart(self):
@@ -525,16 +551,10 @@ class IKFPanel:
                     self.lbl_state.config(text="● 已连接" if conn else "● 未连接",
                                           foreground="green" if conn else "gray")
                     if conn:
-                        self._apply_memory()
+                        self._on_connected()
                 elif kind == "status":
                     m, l, ld, bt = payload
-                    self._render_status(m, l, ld, bt)
-                elif kind == "pending_ldac":
-                    # 降噪恢复完成后再补 LDAC，保证最终降噪=记忆值
-                    if self.cfg.get("ldac", False):
-                        self.ops.set_ldac(True)
-                elif kind == "apply_ui":
-                    pass
+                    self._on_status(m, l, ld, bt)
         except queue.Empty:
             pass
         self.root.after(100, self._poll_queue)

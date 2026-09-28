@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""正式打包图标: 纯黑底 + Segoe UI Black "1KF"(数字1低调替换I), 抗锯齿大字号"""
+"""正式打包图标: 纯黑底 + Segoe UI Black "1KF"(数字1低调替换I, 规避商标风险), 抗锯齿大字号"""
 from PIL import Image, ImageDraw, ImageFont
 
 SIZE = 512
