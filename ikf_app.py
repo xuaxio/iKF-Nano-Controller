@@ -89,15 +89,24 @@ class IKFOps(threading.Thread):
 
     # ---- 连接 ----
     def connect(self):
+        # 同步置位 _connecting，避免与看门狗重连竞争（协程真正启动前标志已生效）
+        if self._connecting:
+            return None
+        self._connecting = True
         with self.busy:
-            return self.submit(self._connect_coro())
+            fut = self.submit(self._connect_coro())
+        if fut is None:
+            self._connecting = False
+        return fut
 
     async def _connect_coro(self):
-        self._connecting = True
         try:
             if self._client is not None:
                 try: await self._client.disconnect()
                 except Exception: pass
+                self._client = None
+                # 等待 BLE 链路完全释放，避免立即重连被拒
+                await asyncio.sleep(0.6)
             c = IKF(self.mac)
             await c.connect()
             self._client = c
@@ -241,7 +250,8 @@ class IKFPanel:
         row = ttk.Frame(self.root); row.pack(fill="x", **pad)
         self.lbl_state = ttk.Label(row, text="● 未连接", font=("Microsoft YaHei UI", 10))
         self.lbl_state.pack(side="left")
-        ttk.Button(row, text="重新连接", command=self.try_connect).pack(side="right")
+        self.btn_reconn = ttk.Button(row, text="重新连接", command=self.try_connect)
+        self.btn_reconn.pack(side="right")
 
         # 记忆 + 自启
         box = ttk.LabelFrame(self.root, text="设置记忆与自启动", padding=8)
@@ -342,8 +352,16 @@ class IKFPanel:
 
     # ---------- 连接 ----------
     def try_connect(self):
-        self._log(">> 尝试连接 ...")
-        self.ops.connect()
+        if self.ops._connecting:
+            self._log("正在连接中，请稍候 ...")
+            return
+        self._log(">> 手动重连 ...")
+        self.btn_reconn.config(state="disabled")
+        self.lbl_state.config(text="● 连接中…", foreground="orange")
+        if self.ops.connect() is None:
+            # 已被其他连接抢先（或后台未就绪），恢复按钮状态
+            self.btn_reconn.config(state="normal")
+            self._log("已有连接正在进行")
 
     def _watchdog(self):
         """每 3 秒：周期刷新真实状态；检测断连并自动重连（带防抖）。
@@ -548,6 +566,7 @@ class IKFPanel:
                     self._append_log(payload)
                 elif kind == "state":
                     conn = payload
+                    self.btn_reconn.config(state="normal")
                     self.lbl_state.config(text="● 已连接" if conn else "● 未连接",
                                           foreground="green" if conn else "gray")
                     if conn:
