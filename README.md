@@ -2,9 +2,17 @@
 
 面向 iKF-Nano 系列蓝牙降噪耳机的 Windows 图形化控制工具。仅用于个人设备的控制适配与学习研究。
 
-> **Keywords / 关键词：** `bluetooth ANC headphones` `noise cancelling earbuds` `Active Noise Cancellation` `LDAC` `BLE GATT` `Windows desktop app` `iKF earbuds controller` — 蓝牙降噪耳机、主动降噪、通透模式、降噪档位、LDAC 高音质、电量显示
+> **Keywords / 关键词：** `iKF` `iKF-Nano` `iKF controller` `iKF 耳机` `iKF earbuds` `bluetooth ANC headphones` `noise cancelling earbuds` `Active Noise Cancellation` `LDAC` `BLE GATT` `Windows desktop app` — 蓝牙降噪耳机、主动降噪、通透模式、降噪档位、LDAC 高音质、电量显示
 
 ![图标](ikf_icon.ico)
+
+## 下载（直接使用，无需 Python）
+
+**➡️ [点此下载 iKF-Nano控制.exe](https://github.com/xuaxio/iKF-Nano-Controller/releases/latest)**
+
+下载后双击即用，无需安装 Python 或任何依赖。Windows 10/11。
+
+> 也可在 [Releases 页面](https://github.com/xuaxio/iKF-Nano-Controller/releases) 查看所有版本。
 
 ## 功能
 
@@ -41,7 +49,26 @@ python ikf_control.py ldac on        # 命令行开 LDAC
 
 ## 更新日志
 
-各版本的变更记录见 [CHANGELOG.md](CHANGELOG.md)。
+### v0.1.1 — 2026-09-28
+- **修复开机时降噪档位多次来回跳**：记忆恢复改为「先读回真实状态 → 逐项比对 → 只下发有差异的指令」，不再无条件重发 LDAC、不再重复补设降噪
+- 修复关闭 LDAC 后状态不刷新、蓝牙已断连仍显示「已连接」：新增每 3 秒状态轮询 + 断连看门狗（自动重连并恢复设置）
+- 修复打包运行时 `sys.stdout` 为 `None` 导致启动崩溃
+- 修复窗口图标退回 Tk 默认图标（打包未包含图标资源）
+- 修复记忆配置分家：开机自启统一指向 exe，消除两套配置漂移
+- 修复「重新连接」按钮不可靠：消除与看门狗的连接竞争、断连后延迟 0.6 秒再重连、增加「连接中…」状态反馈
+- 移除界面上的「断开/连接」按钮（与后台自动连接定位重复）
+
+### v0.1.0 — 2026-09-26
+- 首个发布版本
+- 降噪控制：正常 / 通透 / 降噪（自适应 / 轻度 / 均匀 / 重度）
+- LDAC 高音质开关
+- 实时状态与电量显示
+- 设置记忆：重连 / 重启后自动恢复上次档位
+- 自动重连、系统托盘驻留、开机自启动
+- 图形界面（`ikf_app.py`）与命令行工具（`ikf_control.py`）
+- 自定义图标（黑底白字 1KF）
+
+> 完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 声明
 
