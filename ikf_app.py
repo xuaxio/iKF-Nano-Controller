@@ -629,6 +629,14 @@ class IKFPanel:
     def _append_log(self, msg):
         self.log.config(state="normal")
         self.log.insert("end", msg + "\n")
+        # 日志框只增不删，长时间挂机（如耳机不在范围反复重连）内存会缓慢增长：
+        # 超过 2000 行就一次性删掉最旧的 1000 行，批量删避免每行都做一次删除操作
+        try:
+            lines = int(float(self.log.index("end-1c")))   # 当前总行数
+            if lines > 2000:
+                self.log.delete("1.0", f"{lines - 1000}.0")
+        except Exception:
+            pass   # 文本控件异常不影响日志本身
         self.log.see("end")
         self.log.config(state="disabled")
 
