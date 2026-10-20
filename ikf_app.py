@@ -6,6 +6,8 @@ iKF-Nano 电脑端控制软件（图形版）
   2. 记忆上次设置：像手机 App 一样，连接成功后自动恢复上次的降噪档位与 LDAC
   3. 开机自启：注册到 Windows 启动项，开机静默运行并自动连接耳机
   4. 后台驻留：关闭窗口最小化到系统托盘，可随时恢复
+  5. 音频通道修复：显示声音是否走在耳机上，支持一键把系统默认输出切回耳机
+  6. 退出时优雅断开 BLE，确保耳机链路释放（否则下次会连不上、必须重启）
 协议：FF <SEQ> <LEN> <CMD+载荷> AA，写特征 0x00F1 / 通知 0x00F2（见 ikf_control.py）
 依赖：bleak, pystray, pillow（pip install bleak pystray pillow）
 用法：
@@ -22,6 +24,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 
 from ikf_control import IKF, ANC_MODES, ANC_LEVELS, MODE_NAME, LEVEL_NAME
+import win_audio   # 系统音频输出设备查询/切换（只处理 A2DP，与 BLE 控制通道无关）
 
 APP_NAME = r"IKFControlApp"
 
@@ -41,6 +44,7 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "ikf_app_config.json")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 DEFAULT_MAC = "B0:F0:0C:90:F0:73"
+AUDIO_KEY = "iKF"   # 在系统播放设备里按此关键字识别耳机的 A2DP 端点
 
 # 档位 -> (模式字, 档位字, 显示名)
 LEVEL_ORDER = ["adaptive", "light", "balanced", "deep"]
@@ -74,6 +78,7 @@ class IKFOps(threading.Thread):
         self.wr_uuid = None
         self.connected = False
         self._connecting = False
+        self._quitting = False     # 正在退出（退出期间禁止触发新的自动重连）
 
     def run(self):
         self.loop = asyncio.new_event_loop()
@@ -102,11 +107,21 @@ class IKFOps(threading.Thread):
     async def _connect_coro(self):
         try:
             if self._client is not None:
-                try: await self._client.disconnect()
+                old = self._client
+                try: await old.disconnect()
                 except Exception: pass
                 self._client = None
-                # 等待 BLE 链路完全释放，避免立即重连被拒
-                await asyncio.sleep(0.6)
+                # 等待旧链路真正释放：先轮询 is_connected，再留一段固定余量。
+                # 旧版只 sleep 0.6 秒就建新连接，链路没释放干净时会被耳机拒绝，
+                # 表现出来就是"断开后就连不上，必须重启"。
+                for _ in range(30):          # 最多等 3 秒
+                    try:
+                        if not old.client.is_connected:
+                            break
+                    except Exception:
+                        break
+                    await asyncio.sleep(0.1)
+                await asyncio.sleep(2.0)     # Windows 蓝牙栈彻底释放句柄还需一点余量
             c = IKF(self.mac)
             await c.connect()
             self._client = c
@@ -148,6 +163,42 @@ class IKFOps(threading.Thread):
         self.connected = False
         self.q.put(("state", False))
         self.q.put(("log", "已断开"))
+
+    def shutdown(self, timeout=8.0):
+        """退出前优雅断开：确认 BLE 链路真正释放后再结束进程。
+
+        这是"断开后连不上、必须重启"的根因修复：旧版退出时只关闭窗口，
+        进程带着未释放的 BLE 连接直接消失，耳机那边仍认为"和电脑连着"，
+        于是拒绝新连接，直到耳机超时或电脑重启。"""
+        try:
+            fut = self.submit(self._shutdown_coro())
+            if fut is not None:
+                fut.result(timeout=timeout)   # 等断开真正完成（带超时兜底）
+        except Exception:
+            pass
+        try:
+            if self.loop:
+                self.loop.call_soon_threadsafe(self.loop.stop)
+        except Exception:
+            pass
+
+    async def _shutdown_coro(self):
+        c = self._client
+        if c is not None:
+            try:
+                await c.disconnect()
+            except Exception:
+                pass
+            # 轮询确认链路已断开（最多 5 秒）
+            for _ in range(50):
+                try:
+                    if not c.client.is_connected:
+                        break
+                except Exception:
+                    break
+                await asyncio.sleep(0.1)
+        self._client = None
+        self.connected = False
 
     # ---- 指令 ----
     def set_anc(self, mode, level=None):
@@ -216,7 +267,7 @@ class IKFPanel:
     def __init__(self, root, autostart=False):
         self.root = root
         root.title("iKF-Nano 控制")
-        root.geometry("440x620")
+        root.geometry("440x664")
         root.resizable(False, False)
         try:
             root.iconbitmap(resource_path("ikf_icon.ico"))
@@ -232,6 +283,8 @@ class IKFPanel:
         self.tray_icon = None
         self.want_apply = True   # 是否在连接后自动应用记忆设置
         self._last_reconn = time.monotonic()  # 上次自动重连时间戳（防抖，初始=启动时刻）
+        self._reconn_backoff = 0   # 连续重连失败次数，用于退避（5→10→20→40→60 秒）
+        self._quitting = False     # 正在退出：进门后不再触发新的自动重连
 
         self._build_ui()
         self._sync_apply_controls()
@@ -248,10 +301,19 @@ class IKFPanel:
     def _build_ui(self):
         pad = {"padx": 8, "pady": 4}
         row = ttk.Frame(self.root); row.pack(fill="x", **pad)
-        self.lbl_state = ttk.Label(row, text="● 未连接", font=("Microsoft YaHei UI", 10))
+        self.lbl_state = ttk.Label(row, text="● 控制通道：未连接", font=("Microsoft YaHei UI", 10))
         self.lbl_state.pack(side="left")
         self.btn_reconn = ttk.Button(row, text="重新连接", command=self.try_connect)
         self.btn_reconn.pack(side="right")
+
+        # 音频通道状态 + 一键切回耳机。
+        # 注意：BLE 控制通道连上 ≠ 声音走耳机。放歌走的是经典蓝牙 A2DP，
+        # 用哪个输出设备由 Windows 决定，所以这里单独显示、单独提供修复按钮。
+        arow = ttk.Frame(self.root); arow.pack(fill="x", **pad)
+        self.lbl_audio = ttk.Label(arow, text="音频输出：查询中…", font=("Microsoft YaHei UI", 10))
+        self.lbl_audio.pack(side="left")
+        self.btn_audio = ttk.Button(arow, text="切到耳机", command=self.switch_audio_to_headset)
+        self.btn_audio.pack(side="right")
 
         # 记忆 + 自启
         box = ttk.LabelFrame(self.root, text="设置记忆与自启动", padding=8)
@@ -357,15 +419,43 @@ class IKFPanel:
             return
         self._log(">> 手动重连 ...")
         self.btn_reconn.config(state="disabled")
-        self.lbl_state.config(text="● 连接中…", foreground="orange")
+        self.lbl_state.config(text="● 控制通道：连接中…", foreground="orange")
         if self.ops.connect() is None:
             # 已被其他连接抢先（或后台未就绪），恢复按钮状态
             self.btn_reconn.config(state="normal")
             self._log("已有连接正在进行")
 
+    # ---------- 音频输出（A2DP，与 BLE 控制通道相互独立） ----------
+    def _refresh_audio(self):
+        """刷新音频输出状态：耳机连着不代表声音走了耳机。"""
+        try:
+            cur = win_audio.get_default_output()
+            ep = win_audio.find_headset_endpoint(AUDIO_KEY)
+            if ep and cur and cur["guid"].lower() == ep["guid"].lower():
+                self.lbl_audio.config(text="● 音频输出：耳机", foreground="green")
+            elif ep:
+                self.lbl_audio.config(
+                    text="● 音频输出：扬声器（耳机已连但未被选为输出）", foreground="orange")
+            else:
+                # 没有活动的耳机端点：耳机音频链路还没就绪（A2DP 未连上）
+                self.lbl_audio.config(text="● 音频输出：耳机音频未就绪", foreground="gray")
+        except Exception:
+            self.lbl_audio.config(text="● 音频输出：未知", foreground="gray")
+
+    def switch_audio_to_headset(self):
+        """一键把系统默认播放设备切回耳机。"""
+        try:
+            ok, msg = win_audio.switch_to_headset(AUDIO_KEY)
+        except Exception as e:
+            ok, msg = False, f"切换失败：{type(e).__name__}: {e}"
+        self._log(msg)
+        self._refresh_audio()
+
     def _watchdog(self):
-        """每 3 秒：周期刷新真实状态；检测断连并自动重连（带防抖）。
+        """每 3 秒：周期刷新真实状态；检测断连并自动重连（带退避）。
         以耳机真实连接为准，避免“已断开仍显示已连接、状态停滞”的问题。"""
+        if self._quitting:
+            return   # 退出流程已接管，不再排下一次定时器
         try:
             if self.ops.connected:
                 # 连着的状态下周期静默拉取真实状态，UI 始终反映耳机实际
@@ -374,16 +464,22 @@ class IKFPanel:
                 # 蓝牙已断开（或从未连上），且没有正在进行的连接
                 if self.ops.connected:
                     self.ops.connected = False
-                    self.lbl_state.config(text="● 未连接", foreground="gray")
+                    self.lbl_state.config(text="● 控制通道：未连接", foreground="gray")
                     self._log("检测到蓝牙连接已断开")
                 now = time.monotonic()
-                if now - self._last_reconn > 5:
+                # 退避重连：连不上时不要每 5 秒死磕，否则反复冲击蓝牙栈，
+                # 会把连接搞成僵死状态（只能重启电脑）。5→10→20→40→60 秒封顶。
+                delay = min(5 * (2 ** self._reconn_backoff), 60)
+                if now - self._last_reconn > delay:
                     self._last_reconn = now
-                    self._log(">> 自动重连 ...")
+                    self._log(f">> 自动重连 ...（第 {self._reconn_backoff + 1} 次尝试）")
                     self.ops.connect()
+                    self._reconn_backoff = min(self._reconn_backoff + 1, 4)  # 失败则拉长下次间隔
         except Exception as e:
             self._log(f"守护异常: {type(e).__name__}: {e}")
-        self.root.after(3000, self._watchdog)
+        self._refresh_audio()
+        if not self._quitting:
+            self.root.after(3000, self._watchdog)
 
     # ---------- 记忆应用 ----------
     def _mem_anc_spec(self):
@@ -547,12 +643,33 @@ class IKFPanel:
         self._log("窗口已恢复")
 
     def _quit(self, icon=None, item=None):
+        """退出：先优雅断开 BLE（确认链路释放），再结束进程。
+
+        这是"退出后耳机连不上、必须重启"的根治点：旧版直接 destroy 窗口，
+        进程带着未释放的 BLE 连接消失，耳机仍以为连着电脑，拒绝后续连接。"""
+        if self._quitting:
+            return
+        self._quitting = True
         try:
             if self.tray_icon:
                 self.tray_icon.stop()
         except Exception:
             pass
-        self.root.after(0, self.root.destroy)
+        self._log("正在断开耳机连接，释放蓝牙链路 ...")
+
+        def _worker():
+            # 断开要等几秒，放后台线程，避免界面卡死
+            self.ops.shutdown()
+            self.root.after(0, self._destroy_once)
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self.root.after(8000, self._destroy_once)   # 兜底：最长等 8 秒强制退出
+
+    def _destroy_once(self):
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
 
     # ---------- 消息泵 ----------
     def _log(self, msg):
@@ -567,8 +684,11 @@ class IKFPanel:
                 elif kind == "state":
                     conn = payload
                     self.btn_reconn.config(state="normal")
-                    self.lbl_state.config(text="● 已连接" if conn else "● 未连接",
-                                          foreground="green" if conn else "gray")
+                    if conn:
+                        self._reconn_backoff = 0   # 连上了，重置退避计数
+                    self.lbl_state.config(
+                        text="● 控制通道：已连接" if conn else "● 控制通道：未连接",
+                        foreground="green" if conn else "gray")
                     if conn:
                         self._on_connected()
                 elif kind == "status":
